@@ -43,11 +43,108 @@
         }
         function load(c) {
             VK.Api.call('wall.get', {
-                count: 5,
+                count: 100,
                 offset: c,
                 v: "5.87"
             }, function (r) {
+                console.log(r);
+                if (r.error) {
+                    if (r.error.error_code == 6) {
+                        setTimeout(function () {
+                            load(c);
+                        }, 1000);
+                    }
+                    return;
+                }
                 $(r.response.items).each(function () {
+                    // response:
+                    //      count: 1
+                    //      items: Array(1)
+                    //          0:
+                    //              date: 1542693137
+                    //              from_id: 4376856
+                    //              id: 6273
+                    //              likes: {count: 1}
+                    //              text: "Comment text"
+                    //      profiles: Array(1)
+                    //          0:
+                    //              first_name: "Name"
+                    //              id: 4376856
+                    //              last_name: "Surname"
+                    var comments_el = $('<ul>');
+                    function get_comment(post_id, comments_el) {
+                        VK.Api.call(
+                            'wall.getComments',
+                            {v: "5.87", post_id: post_id, count: 100, preview_length: 0,
+                            need_likes: 1, extended: 1, fields: 'first_name,last_name'},
+                            function (rc) {
+                                //console.log(rc);
+                                if (rc.error) {
+                                    if (rc.error.error_code == 6) {
+                                        setTimeout(function () {
+                                            get_comment(post_id, comments_el);
+                                        }, 1000);
+                                    }
+                                    return;
+                                }
+                                if (rc.response.count == 0) {
+                                    return;
+                                }
+                                var profiles = rc.response.profiles.reduce(function(map, obj) {
+                                        map[obj.id] = obj.first_name + " " + obj.last_name;
+                                        return map;
+                                }, {});
+                                $(rc.response.items).each(function () {
+                                    var comment = $('<li>');
+                                    comment.text(this.text + " - " + profiles[this.from_id]);
+                                    comment.appendTo(comments_el);
+                                });
+                            }
+                        );
+                    }
+                    get_comment(this.id, comments_el);
+                    var likes_el = $('<ul>');
+                    //  response:
+                    //      count: 10
+                    //      items: Array(10)
+                    //          0:
+                    //              first_name: "Tatiana"
+                    //              id: 254552743
+                    //              last_name: "Malakhova"
+                    //              type: "profile"
+                    //VK.Api.call(
+                    //    'likes.getList',
+                    //    {v: "5.87", type: "post", item_id: this.id, extended: 1, },
+                    //    function (r) {
+                    //        console.log(r);
+                    //    }
+                    //);
+                    function get_likes(post_id, likes_el) {
+                        VK.Api.call(
+                            'likes.getList',
+                            {v: "5.87", type: "post", item_id: post_id, extended: 1},
+                            function (rc) {
+                                //console.log('LLL', rc);
+                                if (rc.error) {
+                                    if (rc.error.error_code == 6) {
+                                        setTimeout(function () {
+                                            get_likes(post_id, likes_el);
+                                        }, 1000);
+                                    }
+                                    return;
+                                }
+                                if (rc.response.count == 0) {
+                                    return;
+                                }
+                                $(rc.response.items).each(function () {
+                                    var comment = $('<li>');
+                                    comment.text(this.first_name + " " + this.last_name);
+                                    comment.appendTo(likes_el);
+                                });
+                            }
+                        );
+                    }
+                    get_likes(this.id, likes_el);
                     var p = $("#post_example")
                         .clone()
                         .removeAttr('id')
@@ -73,24 +170,54 @@
                     $(this.attachments).each(function () {
                         var att = $('<p>');
                         if (this.type == 'photo') {
-                            var src = this.photo.sizes[0].url;
+                            var src;
+                            if (this.photo.sizes[8]) {
+                                src = this.photo.sizes[8].url;
+                            } else if (this.photo.sizes[7]) {
+                                src = this.photo.sizes[7].url;
+                            } else {
+                                console.log(this);
+                            }
                             var pp = $("#photo_example")
                                 .clone()
                                 .removeAttr('id')
                                 .removeClass('invisible');
                             pp.find('img').attr('src', src);
                             att.append(pp);
+                        } else if (this.type == 'link') {
+                            var a = $('<a>');
+                            a.attr('href', this.link.url).text(this.link.title);
+                            a.appendTo(att);
+                        } else if (this.type == 'video') {
+                            var src = this.video.photo_1280;
+                            var pp = $("#photo_example")
+                                .clone()
+                                .removeAttr('id')
+                                .removeClass('invisible');
+                            pp.find('img').attr('src', src);
+                            att.append('Video: ')
+                            att.append(pp);
+                        } else if (this.type == 'audio') {
+                            att.append('Audio: ' + this.audio.artist + ' - ' + this.audio.title);
                         } else {
                             att.text(this.type);
+                            console.log(this.type, this);
                         }
                         att.appendTo(p);
                     });
 
+                    p.append('<p>Comments:</p>');
+                    comments_el.appendTo(p);
+                    p.append('<p>Likes:</p>');
+                    likes_el.appendTo(p);
                     p.appendTo('#content');
                 });
                 if (r.response.items.length) {
-                    //load(c + r.response.items.length)
+                    load(c + r.response.items.length)
+                    return;
                 }
+                // comment "return" to download zip
+                return;
 
                 var time = new Date();
                 var options = { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' };
