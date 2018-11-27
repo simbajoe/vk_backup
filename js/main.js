@@ -18,10 +18,163 @@
     var VKDumper = function (nr_posts_limit, pic_size) {
         this.nr_posts_limit = nr_posts_limit;
         this.pic_size = pic_size;
+        this.wall = [];
     };
+
+    VKDumper.prototype.get_wall_req = function (count, offset, cb) {
+        var self = this;
+        var query = "return [";
+        while (count > 0) {
+            var gw_count = Math.min(100, count);
+            query += "API.wall.get({ count: " + gw_count + ", offset: " + offset + "}).items"
+            offset += gw_count;
+            count -= gw_count;
+            if (count > 0) {
+                query += ", ";
+            }
+        }
+        query += "];";
+        VK.Api.call('execute', {
+            code: query,
+            v: "5.87"
+        }, function (r) {
+            self.wall = self.wall.concat([].concat.apply([], r.response));
+            self.nr_iterations -= 1;
+            if (self.nr_iterations == 0) {
+                self.get_likes(cb);
+            }
+        });
+    };
+
+    VKDumper.prototype.get_likes_req = function (count, offset, cb) {
+        var self = this;
+        var orig_count = count;
+        var orig_offset = offset;
+        var query = "return [";
+        while (count > 0) {
+            var post = self.wall[offset];
+            query += '[' + offset + ', API.likes.getList({ type: "post", item_id: ' + post.id + ', extended: 1})]'
+            offset += 1;
+            count -= 1;
+            if (count > 0) {
+                query += ", ";
+            }
+        }
+        query += "];";
+        VK.Api.call('execute', {
+            code: query,
+            v: "5.87"
+        }, function (r) {
+            if (r.error) {
+                if (r.error.error_code == 6) {
+                    var timeout = Math.floor(Math.random() * 2 * self.nr_iterations * 1000 / 10);
+                    console.log('likes timeout', self.nr_iterations, orig_offset, orig_count, timeout);
+                    setTimeout(function () {
+                        self.get_likes_req(orig_count, orig_offset, cb);
+                    }, timeout);
+                } else {
+                    console.log(r);
+                }
+                return;
+            }
+            $(r.response).each(function (index, value) {
+                var post_offset = value[0];
+                var likes = value[1];
+                self.wall[post_offset].likes = likes;
+            });
+            self.nr_iterations -= 1;
+            if (self.nr_iterations == 0) {
+                self.get_comments(cb);
+            }
+        });
+    };
+
+    VKDumper.prototype.get_comments_req = function (count, offset, cb) {
+        var self = this;
+        var orig_count = count;
+        var orig_offset = offset;
+        var query = "return [";
+        while (count > 0) {
+            var post = self.wall[offset];
+            query += '[' + offset + ', API.wall.getComments({ count: 100, preview_length: 0, need_likes: 1, fields: "first_name,last_name", post_id: ' + post.id + ', extended: 1})]'
+            offset += 1;
+            count -= 1;
+            if (count > 0) {
+                query += ", ";
+            }
+        }
+        query += "];";
+        VK.Api.call('execute', {
+            code: query,
+            v: "5.87"
+        }, function (r) {
+            if (r.error) {
+                if (r.error.error_code == 6) {
+                    var timeout = Math.floor(Math.random() * self.nr_iterations * 1000 / 10);
+                    console.log('comments timeout', self.nr_iterations, orig_offset, orig_count, timeout);
+                    setTimeout(function () {
+                        self.get_comments_req(orig_count, orig_offset, cb);
+                    }, timeout);
+                } else {
+                    console.log(r);
+                }
+                return;
+            }
+            $(r.response).each(function (index, value) {
+                var post_offset = value[0];
+                var comments = value[1];
+                self.wall[post_offset].comments = comments;
+            });
+            self.nr_iterations -= 1;
+            if (self.nr_iterations == 0) {
+                cb();
+            }
+        });
+    };
+
+    VKDumper.prototype.get_wall = function (cb) {
+        var offset = 0;
+        var max_count = 2000;
+        var nr_posts = this.nr_posts_limit;
+        this.nr_iterations = Math.ceil(nr_posts / max_count);
+        while (offset < nr_posts) {
+            var count = Math.min(max_count, nr_posts - offset);
+            this.get_wall_req(count, offset, cb);
+            offset += count;
+        }
+    }
+
+    VKDumper.prototype.get_likes = function (cb) {
+        var offset = 0;
+        var max_count = 25;
+        var nr_posts = this.wall.length;
+        this.nr_iterations = Math.ceil(nr_posts / max_count);
+        while (offset < nr_posts) {
+            var count = Math.min(max_count, nr_posts - offset);
+            this.get_likes_req(count, offset, cb);
+            offset += count;
+        }
+    }
+
+    VKDumper.prototype.get_comments = function (cb) {
+        var offset = 0;
+        var max_count = 25;
+        var nr_posts = this.wall.length;
+        this.nr_iterations = Math.ceil(nr_posts / max_count);
+        while (offset < nr_posts) {
+            var count = Math.min(max_count, nr_posts - offset);
+            this.get_comments_req(count, offset, cb);
+            offset += count;
+        }
+    }
 
     VKDumper.prototype.load = function (c) {
         var self = this;
+        console.log('start');
+        self.get_wall(function () {
+            console.log(self.wall);
+        });
+        return;
         if (typeof c === 'undefined') {
             c = 0;
         }
@@ -245,8 +398,9 @@
     $(document).ready(function () {
         VK.init({ apiId: 6746139 });
         VK.Auth.login(function (session, status) {
-            var dumper = new VKDumper(101, 0);
+            var dumper = new VKDumper(4000, 0);
             dumper.load();
+            exports.VKDumper = dumper;
         }, 8192);
     });
 
