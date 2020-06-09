@@ -15,10 +15,13 @@
         xhr.send();
     };
 
-    var VKDumper = exports.VKDumper = function (nr_posts_limit, pic_size) {
+    var VKDumper = exports.VKDumper = function (from, nr_posts_limit, pic_size) {
+        this.from = from;
         this.nr_posts_limit = nr_posts_limit;
         this.pic_size = pic_size;
         this.wall = [];
+        this.stats = {};
+        this.months = [];
     };
 
     VKDumper.prototype.get_wall_req = function (count, offset, cb) {
@@ -140,15 +143,91 @@
         });
     };
 
+    VKDumper.prototype.get_stat_req = function (offset, cb) {
+        var self = this;
+        var orig_offset = offset;
+        var query = "return [";
+        var count = 1000;
+        while (count > 0) {
+            var gw_count = Math.min(100, count);
+            query += "API.wall.get({ count: " + gw_count + ", offset: " + offset + ', extended: 1, fields: "first_name,last_name"})'
+            offset += gw_count;
+            count -= gw_count;
+            if (count > 0) {
+                query += ", ";
+            }
+        }
+        query += "];";
+        VK.Api.call('execute', {
+            code: query,
+            v: "5.87"
+        }, function (r) {
+            console.log(query, r);
+            if (r.error && r.error.error_code == 6) {
+                // Too many requests per second
+                console.log('timeout');
+                setTimeout(function () { self.get_stat_req(offset, cb)}, 1000);
+            } else {
+                var processed = 0
+                $(r.response).each(function (index_req, req) {
+                    var items = req.items;
+                    $(items).each(function (index_item, item) {
+                        processed += 1;
+                        console.log(item);
+                        var date = new Date(item.date * 1000);
+                        var year = date.toISOString().slice(0, 4);
+                        var month = date.toISOString().slice(0, 7);
+                        var month_read = date.toLocaleDateString(undefined, { month: 'long' });
+                        if (!(year in self.stats)) {
+                            self.stats[year] = {
+                                months: {},
+                                from: undefined,
+                                to: undefined
+                            };
+                        }
+                        if (!(month in self.stats[year].months)) {
+                            self.stats[year].months[month] = {
+                                name: month_read,
+                                items: [],
+                                from: undefined,
+                                to: undefined
+                            };
+                        }
+                        self.stats[year].months[month].items.push(item);
+                        var global_index = orig_offset + index_req * gw_count + index_item;
+                        if (typeof(self.stats[year].from) === 'undefined' || global_index < self.stats[year].from) {
+                            self.stats[year].from = global_index;
+                        }
+                        if (typeof(self.stats[year].to) === 'undefined' || global_index > self.stats[year].to) {
+                            self.stats[year].to = global_index;
+                        }
+                        if (typeof(self.stats[year].months[month].from) === 'undefined' || global_index < self.stats[year].months[month].from) {
+                            self.stats[year].months[month].from = global_index;
+                        }
+                        if (typeof(self.stats[year].months[month].to) === 'undefined' || global_index > self.stats[year].months[month].to) {
+                            self.stats[year].months[month].to = global_index;
+                        }
+                    });
+                });
+                console.log("processed", processed);
+                if (processed) {
+                    self.get_stat_req(offset, cb);
+                } else {
+                    cb();
+                }
+            }
+        });
+    };
+
     VKDumper.prototype.get_wall = function (cb) {
-        var offset = 0;
         var max_count = 1000;
         var nr_posts = this.nr_posts_limit;
+        var from = this.from;
         this.nr_iterations = Math.ceil(nr_posts / max_count);
-        while (offset < nr_posts) {
-            var count = Math.min(max_count, nr_posts - offset);
-            this.get_wall_req(count, offset, cb);
-            offset += count;
+        while (from < this.from + nr_posts) {
+            var count = Math.min(max_count, this.from + nr_posts - from);
+            this.get_wall_req(count, from, cb);
+            from += count;
         }
     }
 
@@ -328,11 +407,58 @@
         });
     };
 
+    VKDumper.prototype.render_stats = function () {
+        var self = this;
+        var years = Object.getOwnPropertyNames(self.stats);
+        years.sort();
+        for (var i in years) {
+            var year_key = years[i];
+            var year = self.stats[year_key];
+            var year_el = $('<p>');
+            var year_el_a = $('<a>');
+            var total = year.to - year.from + 1;
+            year_el_a.text(year_key + ' (' + total + ')');
+            year_el_a.attr("href", "/?from=" + year.from + '&limit=' + total );
+            year_el_a.attr("target", "_blank");
+            year_el.append(year_el_a);
+            $('#stats').append(year_el);
+            var ul = $('<ul>');
+            var months = Object.getOwnPropertyNames(self.stats[year_key].months);
+            months.sort();
+            for (var j in months) {
+                var month_key = months[j];
+                var month = self.stats[year_key].months[month_key];
+                var li = $('<li>');
+                var month_el_a = $('<a>');
+                var m_total = month.to - month.from + 1;
+                month_el_a.text(month.name + ' (' + m_total + ')');
+                month_el_a.attr("href", "/?from=" + month.from + '&limit=' + m_total );
+                month_el_a.attr("target", "_blank");
+                li.append(month_el_a);
+                ul.append(li);
+            }
+            $('#stats').append(ul);
+        }
+    };
+
     $(document).ready(function () {
+        const urlParams = new URLSearchParams(window.location.search);
+        var from = parseInt(urlParams.get('from'));
+        var limit = parseInt(urlParams.get('limit'));
+        console.log(from, limit);
         VK.init({ apiId: 6746139 });
         VK.Auth.login(function (session, status) {
-            var dumper = new VKDumper(8000, 8);
-            dumper.load();
+            var dumper = new VKDumper(from, limit, 8);
+            if (!isNaN(from) && !isNaN(limit)) {
+                console.log('here');
+                dumper.load();
+            } else {
+                console.log('there');
+                dumper.get_stat_req(0, function () {
+                    console.log("done");
+                    dumper.render_stats();
+                });
+            }
             exports.VKDumper = dumper;
         }, 8192);
         $('#download').click(function () {
