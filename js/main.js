@@ -1,6 +1,23 @@
 (function (exports) {
     "use strict";
 
+    var findMaxPhotoUrl = function (obj) {
+        var props = Object.getOwnPropertyNames(obj);
+        var max_size = 0;
+        var max_prop;
+        for (var i in props) {
+            var prop = props[i];
+            if (prop.slice(0, 6) == 'photo_') {
+                var size = parseInt(prop.slice(6));
+                if (size > max_size) {
+                    max_size = size;
+                    max_prop = prop;
+                }
+            }
+        }
+        return typeof(max_prop) === "undefined" ? false : obj[max_prop];
+    };
+
     var toDataURL = function (url, callback) {
         var xhr = new XMLHttpRequest();
         xhr.open('get', url);
@@ -22,6 +39,8 @@
         this.wall = [];
         this.stats = {};
         this.months = [];
+        this.notes = [];
+        this.notes_by_id = {};
     };
 
     VKDumper.prototype.get_wall_req = function (count, offset, cb) {
@@ -47,6 +66,11 @@
                 var items = req.items;
                 $(items).each(function (index_item, item) {
                     item.profiles = req.profiles;
+                    $(item.attachments).each(function (i, attachment) {
+                        if (attachment.type == 'note') {
+                            self.notes.push(attachment.note);
+                        }
+                    });
                 });
                 self.wall = self.wall.concat(items);
             });
@@ -138,9 +162,52 @@
             });
             self.nr_iterations -= 1;
             if (self.nr_iterations == 0) {
-                cb();
+                self.get_notes(cb);
             }
         });
+    };
+
+    VKDumper.prototype.get_notes_req = function (count, offset, cb) {
+        var self = this;
+        var orig_count = count;
+        var orig_offset = offset;
+        var query = "return [";
+        while (count > 0) {
+            var note = self.notes[offset];
+            query += "API.notes.getById({ note_id: " + note.id + '})'
+            offset += 1;
+            count -= 1;
+            if (count > 0) {
+                query += ", ";
+            }
+        }
+        query += "];";
+        VK.Api.call('execute', {
+            code: query,
+                v: "5.87"
+            }, function (r) {
+                if (r.error) {
+                    if (r.error.error_code == 6) {
+                        var timeout = Math.floor(Math.random() * self.nr_iterations * 1000 / 10);
+                        console.log('notes timeout', self.nr_iterations, orig_offset, orig_count, timeout);
+                        setTimeout(function () {
+                            self.get_notes_req(orig_count, orig_offset, cb);
+                        }, timeout);
+                    } else {
+                        console.log(r);
+                    }
+                    return;
+                }
+                console.log(r);
+                $(r.response).each(function (index, value) {
+                    self.notes_by_id[value.id] = value;
+                });
+                self.nr_iterations -= 1;
+                if (self.nr_iterations == 0) {
+                    cb();
+                }
+            }
+        );
     };
 
     VKDumper.prototype.get_stat_req = function (offset, cb) {
@@ -255,6 +322,23 @@
         }
     }
 
+    VKDumper.prototype.get_notes = function (cb) {
+        console.log('getting notes');
+        var offset = 0;
+        var max_count = 25;
+        var nr_notes = this.notes.length;
+        this.nr_iterations = Math.ceil(nr_notes / max_count);
+        if (nr_notes == 0) {
+            cb();
+        } else {
+            while (offset < nr_notes) {
+                var count = Math.min(max_count, nr_notes - offset);
+                this.get_notes_req(count, offset, cb);
+                offset += count;
+            }
+        }
+    }
+
     VKDumper.prototype.render = function () {
         var self = this;
         self.wall.sort(function (a, b) { return a.id - b.id });
@@ -267,22 +351,37 @@
 
             var options = { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' };
             time = time.toLocaleDateString('ru-RU', options);
-            var views = post.views ? post.views.count : "?";
-            var likes = post.likes ? post.likes.length : "?";
-            var reposts = post.reposts ? post.reposts.count : "?";
-            var comments = post.comments ? post.comments.length : "?";
+            var views = post.views ? post.views.count : false;
+            var likes = post.likes ? post.likes.length : false;
+            var reposts = post.reposts ? post.reposts.count : false;
+            var comments = post.comments ? post.comments.length : false;
             var profiles = post.profiles.reduce(function(map, obj) {
                     map[obj.id] = obj.first_name + " " + obj.last_name;
                     return map;
             }, {});
             p.find(".from").text(profiles[post.from_id]);
-            p.find(".views").text(views);
-            p.find(".likes").text(likes);
-            p.find(".reposts").text(reposts);
-            p.find(".comments").text(comments);
+            if (comments) {
+                p.find(".comments").text(comments);
+                p.find("._comments").removeClass("invisible");
+            }
+            if (reposts) {
+                p.find(".reposts").text(reposts);
+                p.find("._reposts").removeClass("invisible");
+            }
+            if (post.text) {
+                p.find(".text").html(post.text.replace(/\n/g, "<br />"));
+                p.find("._text").removeClass("invisible");
+            }
+            if (likes) {
+                p.find(".likes").text(likes);
+                p.find("._likes").removeClass("invisible");
+            }
+            if (views) {
+                p.find(".views").text(views);
+                p.find("._views").removeClass("invisible");
+            }
             p.find(".time").text(time);
             p.find(".id").text(post.id);
-            p.find(".text").text(post.text);
             /*p.find(".debug").text(JSON.stringify(post, undefined, 4));*/
             p.data("id", post.id);
             p.data("time", time);
@@ -310,7 +409,7 @@
                     a.attr('href', attachment.link.url).text(attachment.link.title);
                     a.appendTo(att);
                 } else if (attachment.type == 'video') {
-                    var src = attachment.video.photo_1280;
+                    var src = findMaxPhotoUrl(attachment.video);
                     var pp = $("#photo_example")
                         .clone()
                         .removeAttr('id')
@@ -318,8 +417,35 @@
                     pp.find('img').attr('src', src);
                     att.append('Video: ')
                     att.append(pp);
+                    if (attachment.video.title) {
+                        att.append("</br>" + `Title: ${attachment.video.title}`);
+                    }
+                    if (attachment.video.description) {
+                        att.append("</br>" + `Description: ${attachment.video.description}`);
+                    }
                 } else if (attachment.type == 'audio') {
                     att.append('Audio: ' + attachment.audio.artist + ' - ' + attachment.audio.title);
+                } else if (attachment.type == 'graffiti') {
+                    var pp = $("#photo_example")
+                        .clone()
+                        .removeAttr('id')
+                        .removeClass('invisible');
+                    pp.find('img').attr('src', findMaxPhotoUrl(attachment.graffiti));
+                    att.append(pp);
+                } else if (attachment.type == 'posted_photo') {
+                    var pp = $("#photo_example")
+                        .clone()
+                        .removeAttr('id')
+                        .removeClass('invisible');
+                    pp.find('img').attr('src', findMaxPhotoUrl(attachment.posted_photo));
+                    att.append(pp);
+                } else if (attachment.type == 'note') {
+                    var div1 = $('<div>');
+                    div1.html("Note Title: " + self.notes_by_id[attachment.note.id].title);
+                    att.append(div1);
+                    var div = $('<div>');
+                    div.html("Note: " + self.notes_by_id[attachment.note.id].text);
+                    att.append(div);
                 } else {
                     att.text(attachment.type);
                     console.log("Unexpected attachment type", attachment.type, attachment);
@@ -329,26 +455,34 @@
 
             var comments_el = $('<ul>');
             var likes_el = $('<ul>');
+            var has_comments = false;
+            var has_likes = false;
             {
                 var profiles = post.comments.profiles.reduce(function(map, obj) {
                         map[obj.id] = obj.first_name + " " + obj.last_name;
                         return map;
                 }, {});
                 $(post.comments.items).each(function (index_comment, comment) {
+                    has_comments = true;
                     var comment_el = $('<li>');
-                    comment_el.text(comment.text + " - " + profiles[comment.from_id]);
+                    comment_el.html(comment.text.replace(/\n/g, "<br />") + " - " + profiles[comment.from_id]);
                     comment_el.appendTo(comments_el);
                 });
                 $(post.likes.items).each(function (index_like, like) {
+                    has_likes = true;
                     var like_el = $('<li>');
                     like_el.text(like.first_name + " " + like.last_name);
                     like_el.appendTo(likes_el);
                 });
             }
-            p.append('<p>Comments:</p>');
-            comments_el.appendTo(p);
-            p.append('<p>Likes:</p>');
-            likes_el.appendTo(p);
+            if (has_comments) {
+                p.append('<p>Comments:</p>');
+                comments_el.appendTo(p);
+            }
+            if (has_likes) {
+                p.append('<p>Likes:</p>');
+                likes_el.appendTo(p);
+            }
             p.appendTo('#content');
         });
     };
@@ -367,14 +501,13 @@
         /*})();*/
     };
 
-    VKDumper.prototype.download = function (c) {
+    VKDumper.prototype.download = function (name) {
         console.log('here');
         var self = this;
         var time = new Date();
         var options = { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' };
         time = time.toLocaleDateString('ru-RU', options);
         time = time.replace(/:/g, "_");
-        var name = "vk_dump_" + time;
         var zip = new JSZip();
         var folder = zip.folder(name);
         var content_html = $('<body>');
@@ -388,22 +521,26 @@
             var id = $(p).data('id');
             var time = $(p).data('time');
             time = time.replace(/:/g, "_");
-            toDataURL($(img).attr('src'), function(dataURL){
-                var img_folder_name = time + " " + id;
-                var img_folder = folder.folder(img_folder_name);
-                var filename = img_folder_name + " " + i + ".jpeg";
-                img_folder.file(filename, dataURL, {binary: true});
-                $(img).attr('src', img_folder_name + "/" + filename);
-                if (i == count) {
-                    cont.appendTo(content_html);
-                    folder.file(name + ".html", content_html.html());
-                    zip.generateAsync({type:"blob"})
-                        .then(function(content) {
-                            saveAs(content, name + ".zip");
-                        });
-                }
-                i += 1;
-            })
+            if ($(img).attr('src') != "https://vk.com/images/video/thumbs/video_x.png") {
+                toDataURL($(img).attr('src'), function(dataURL){
+                    var img_folder_name = time + " " + id;
+                    var img_folder = folder.folder(img_folder_name);
+                    var filename = img_folder_name + " " + i + ".jpeg";
+                    img_folder.file(filename, dataURL, {binary: true});
+                    $(img).attr('src', img_folder_name + "/" + filename);
+                    if (i == count) {
+                        cont.appendTo(content_html);
+                        folder.file(name + ".html", content_html.html());
+                        zip.generateAsync({type:"blob"})
+                            .then(function(content) {
+                                saveAs(content, name + ".zip");
+                            });
+                    }
+                    i += 1;
+                })
+            } else {
+                count -= 1;
+            }
         });
     };
 
@@ -418,7 +555,7 @@
             var year_el_a = $('<a>');
             var total = year.to - year.from + 1;
             year_el_a.text(year_key + ' (' + total + ')');
-            year_el_a.attr("href", "/?from=" + year.from + '&limit=' + total );
+            year_el_a.attr("href", `/?from=${year.from}&limit=${total}&name=${encodeURIComponent(year_key)}`);
             year_el_a.attr("target", "_blank");
             year_el.append(year_el_a);
             $('#stats').append(year_el);
@@ -432,7 +569,7 @@
                 var month_el_a = $('<a>');
                 var m_total = month.to - month.from + 1;
                 month_el_a.text(month.name + ' (' + m_total + ')');
-                month_el_a.attr("href", "/?from=" + month.from + '&limit=' + m_total );
+                month_el_a.attr("href", `/?from=${month.from}&limit=${m_total}&name=${encodeURIComponent(year_key + '-' + month.name)}`);
                 month_el_a.attr("target", "_blank");
                 li.append(month_el_a);
                 ul.append(li);
@@ -445,6 +582,7 @@
         const urlParams = new URLSearchParams(window.location.search);
         var from = parseInt(urlParams.get('from'));
         var limit = parseInt(urlParams.get('limit'));
+        var name = decodeURI(urlParams.get('name'));
         console.log(from, limit);
         VK.init({ apiId: 6746139 });
         VK.Auth.login(function (session, status) {
@@ -460,9 +598,9 @@
                 });
             }
             exports.VKDumper = dumper;
-        }, 8192);
+        }, 10240); // wall + notes
         $('#download').click(function () {
-            exports.VKDumper.download();
+            exports.VKDumper.download(name);
         });
     });
 

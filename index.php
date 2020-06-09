@@ -23,11 +23,11 @@
             <p>ID: <span class="id"></span></p>
             <p>From: <span class="from"></span></p>
             <p>Time: <span class="time"></span></p>
-            <p>Views: <span class="views"></span></p>
-            <p>Likes: <span class="likes"></span></p>
-            <p>Comments: <span class="comments"></span></p>
-            <p>Reposts: <span class="reposts"></span></p>
-            <p>Text: <span class="text"></span></p>
+            <p class="_views invisible">Views: <span class="views"></span></p>
+            <p class="_likes invisible">Likes: <span class="likes"></span></p>
+            <p class="_comments invisible">Comments: <span class="comments"></span></p>
+            <p class="_reposts invisible">Reposts: <span class="reposts"></span></p>
+            <p class="_text invisible">Text: <span class="text"></span></p>
             <p class="debug"></p>
         </div>
     </div>
